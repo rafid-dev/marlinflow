@@ -13,6 +13,7 @@ from model import (
     NnHalfKACuda,
     NnHalfKP,
     NnHalfKPCuda,
+    NnBoard768Dropout
 )
 from time import time
 
@@ -21,8 +22,12 @@ from trainlog import TrainLog
 
 DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-LOG_ITERS = 10_000_000
+LOG_ITERS = 100_000_000
 
+class AdamWithMomentum(torch.optim.AdamW):
+    def __init__(self, *args, **kwargs):
+        super(AdamWithMomentum, self).__init__(*args, **kwargs)
+        self.defaults['momentum'] = self.defaults["betas"][0]
 
 class WeightClipper:
     def __init__(self, frequency=1):
@@ -36,6 +41,7 @@ class WeightClipper:
 
 
 def train(
+    scheduler,
     model: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
     dataloader: BatchLoader,
@@ -46,6 +52,7 @@ def train(
     train_id: str,
     lr_drop: int | None = None,
     train_log: TrainLog | None = None,
+    lastEpochs = 0,
 ) -> None:
     clipper = WeightClipper()
     running_loss = torch.zeros((1,), device=DEVICE)
@@ -56,14 +63,23 @@ def train(
     iter_since_log = 0
 
     fens = 0
-    epoch = 0
+    epoch = lastEpochs
+
+
+    if scheduler is None:
+        if epoch >= lr_drop:
+            optimizer.param_groups[0]["lr"] *= 0.1
+            print(f"Dropping learning rate")
 
     while epoch < epochs:
         new_epoch, batch = dataloader.read_batch(DEVICE)
         if new_epoch:
             epoch += 1
-            if epoch == lr_drop:
-                optimizer.param_groups[0]["lr"] *= 0.1
+            if scheduler is None:
+                if epoch >= lr_drop:
+                    optimizer.param_groups[0]["lr"] *= 0.1
+                    print(f"Dropping learning rate")
+
             print(
                 f"epoch {epoch}",
                 f"epoch train loss: {running_loss.item() / iterations}",
@@ -78,6 +94,11 @@ def train(
 
             if epoch % save_epochs == 0:
                 torch.save(model.state_dict(), f"nn/{train_id}_{epoch}")
+                torch.save(optimizer.state_dict(), f"nn/opt{train_id}_{epoch}")
+
+                if scheduler is not None:
+                    torch.save(scheduler.state_dict(), f"nn/sch{train_id}_{epoch}")
+
                 param_map = {
                     name: param.detach().cpu().numpy().tolist()
                     for name, param in model.named_parameters()
@@ -93,6 +114,8 @@ def train(
         loss = torch.mean((prediction - expected) ** 2)
         loss.backward()
         optimizer.step()
+        if scheduler is not None:
+            scheduler.step()
         model.apply(clipper)
 
         with torch.no_grad():
@@ -141,22 +164,50 @@ def main():
         default=None,
         help="The epoch learning rate will be dropped",
     )
+    parser.add_argument("--last-epoch",  type=int, help="Last epoch to continue from")
+    
     args = parser.parse_args()
 
     assert args.train_id is not None
     assert args.scale is not None
+    assert args.last_epoch is not None
 
     train_log = TrainLog(args.train_id)
 
-    model = NnHalfKPCuda(128).to(DEVICE)
+    model = NnBoard768(256).to(DEVICE)
 
     data_path = pathlib.Path(args.data_root)
     paths = list(map(str, data_path.glob("*.bin")))
     dataloader = BatchLoader(paths, model.input_feature_set(), args.batch_size)
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
+    scheduler = torch.optim.lr_scheduler.CyclicLR(optimizer, base_lr=args.lr, max_lr=0.01, cycle_momentum=False)
+    # scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=0.01, cycle_momentum=False, steps_per_epoch=2840)
+
+    lastEpochs = 0
+
+    if os.path.exists(f"nn/{args.train_id}_{args.last_epoch}"):
+        print(f"Loading nn from checkpoint..(Epoch: {args.last_epoch})")
+        checkpoint = torch.load(f"./nn/{args.train_id}_{args.last_epoch}", map_location=DEVICE)
+
+        model.load_state_dict(checkpoint)
+        print("Loaded nn!")
+        lastEpochs = args.last_epoch
+    
+    if os.path.exists(f"nn/opt{args.train_id}_{args.last_epoch}"):
+        print(f"Loading optimizer from checkpoint..(Epoch: {args.last_epoch})")
+        checkpoint = torch.load(f"./nn/opt{args.train_id}_{args.last_epoch}", map_location=DEVICE)
+        optimizer.load_state_dict(checkpoint)
+        print("Loaded optimizer!")
+
+    if (os.path.exists(f"nn/sch{args.train_id}_{args.last_epoch}")):
+        print(f"Loading scheduler from checkpoint.. (Epoch: {args.last_epoch})")
+        checkpoint = torch.load(f"./nn/sch{args.train_id}_{args.last_epoch}", map_location=DEVICE)
+        scheduler.load_state_dict(checkpoint)
+        print("Loaded scheduler!")
 
     train(
+        scheduler,
         model,
         optimizer,
         dataloader,
@@ -167,7 +218,10 @@ def main():
         args.train_id,
         lr_drop=args.lr_drop,
         train_log=train_log,
-    )
+        lastEpochs=lastEpochs
+    )   
+
+    print("Training finished!")
 
 
 if __name__ == "__main__":

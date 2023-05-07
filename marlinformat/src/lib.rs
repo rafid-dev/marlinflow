@@ -18,6 +18,15 @@ pub struct PackedBoard {
     extra: u8,
 }
 
+pub struct PackedSFenValue {
+    sfen: [u8; 32],
+    score: i16,
+    pos_move: i16,
+    game_ply: i16,
+    game_result: i8,
+    padding: u8,
+}
+
 impl PackedBoard {
     pub fn pack(board: &Board, eval: i16, wdl: u8, extra: u8) -> Self {
         let occupancy = board.occupied();
@@ -86,6 +95,17 @@ impl PackedBoard {
         builder.fullmove_number = core::num::NonZeroU16::new(self.fullmove_number.get())?;
 
         Some((builder.build().ok()?, self.eval.get(), self.wdl, self.extra))
+    }
+}
+
+impl PackedSFenValue {
+    pub fn unpack(&self) -> Option<(Board, i16, u8, u8)>{
+        let mut builder = BoardBuilder::empty();
+        let mut seen_king = [false; 2];
+        
+        for (pc, sq) in (self.sfen).into_iter().enumerate(){
+            
+        }
     }
 }
 

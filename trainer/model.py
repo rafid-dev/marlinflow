@@ -29,6 +29,33 @@ class NnBoard768(torch.nn.Module):
     def input_feature_set(self) -> InputFeatureSet:
         return InputFeatureSet.BOARD_768
 
+class NnBoard768Dropout(torch.nn.Module):
+    def __init__(self, ft_out: int):
+        super().__init__()
+        self.ft = torch.nn.Linear(768, ft_out)
+        self.dropout = torch.nn.Dropout(p=0.4) # Dropout layer
+        self.out = torch.nn.Linear(ft_out * 2, 1)
+
+    def forward(self, batch: Batch):
+        stm_indices = batch.stm_indices.reshape(-1, 2).T
+        nstm_indices = batch.nstm_indices.reshape(-1, 2).T
+        board_stm_sparse = torch.sparse_coo_tensor(
+            stm_indices, batch.values, (batch.size, 768)
+        ).to_dense()
+        board_nstm_sparse = torch.sparse_coo_tensor(
+            nstm_indices, batch.values, (batch.size, 768)
+        ).to_dense()
+        
+        ## Dropout layers
+        stm_ft = self.dropout(torch.relu(self.ft(board_stm_sparse))) 
+        nstm_ft = self.dropout(torch.relu(self.ft(board_nstm_sparse)))
+
+        hidden = torch.clamp(torch.cat((stm_ft, nstm_ft), dim=1), 0, 1)
+
+        return torch.sigmoid(self.out(hidden))
+
+    def input_feature_set(self) -> InputFeatureSet:
+        return InputFeatureSet.BOARD_768
 
 class NnHalfKP(torch.nn.Module):
     def __init__(self, ft_out: int):

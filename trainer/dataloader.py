@@ -8,7 +8,7 @@ import os
 
 import numpy as np
 import torch
-
+import math
 
 def _load_parse_lib():
     path = "./libparse.dll" if os.name == "nt" else "./libparse.so"
@@ -188,6 +188,7 @@ class BatchLoader:
         self._batch = ParserBatch(
             batch_size, feature_set.max_features(), feature_set.indices_per_feature()
         )
+
 
     def read_batch(self, device: torch.device) -> tuple[bool, Batch]:
         new_epoch = False

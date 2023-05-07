@@ -51,6 +51,7 @@ impl FileReader {
                 Err(_) => break,
             }
         }
+        
         let elems = bytes_read / std::mem::size_of::<PackedBoard>();
         self.packed_buffer.truncate(elems);
 
